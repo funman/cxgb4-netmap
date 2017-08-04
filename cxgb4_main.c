@@ -2257,7 +2257,7 @@ static int cxgb_up(struct adapter *adap)
 
 #ifdef DEV_NETMAP
     /* enable transmits */
-    netif_tx_start_all_queues(NULL/*adap->netdev*/);
+    netif_tx_start_all_queues(adap->port[0 /* FIXME */]);
 #endif
 
 	/* Initialize hash mac addr list*/
