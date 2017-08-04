@@ -81,6 +81,24 @@
 #include "cxgb4_tc_u32.h"
 #include "cxgb4_ptp.h"
 
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+/*
+ * The #ifdef DEV_NETMAP / #endif blocks in this file are meant to
+ * be a reference on how to implement netmap support in a driver.
+ * Additional comments are in cxgb4_netmap_linux.h .
+ *
+ * The code is originally developed on FreeBSD and in the interest
+ * of maintainability we try to limit differences between the two systems.
+ *
+ * <cxgb4_netmap_linux.h> contains functions for netmap support
+ * that extend the standard driver.
+ * It also defines DEV_NETMAP so further conditional sections use
+ * that instead of CONFIG_NETMAP
+ */
+#include <cxgb4_netmap_linux.h>
+#endif
+
+
 char cxgb4_driver_name[] = KBUILD_MODNAME;
 
 #ifdef DRV_VERSION
@@ -2236,6 +2254,12 @@ static int cxgb_up(struct adapter *adap)
 #if IS_ENABLED(CONFIG_IPV6)
 	update_clip(adap);
 #endif
+
+#ifdef DEV_NETMAP
+    /* enable transmits */
+    netif_tx_start_all_queues(NULL/*adap->netdev*/);
+#endif
+
 	/* Initialize hash mac addr list*/
 	INIT_LIST_HEAD(&adap->mac_hlist);
 	return err;
@@ -5207,6 +5231,11 @@ static int init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	print_adapter_info(adapter);
 	setup_fw_sge_queues(adapter);
+
+#ifdef DEV_NETMAP
+    cxgb4_nm_attach(/*adapter*/);
+#endif /* DEV_NETMAP */
+
 	return 0;
 
 sriov:
@@ -5289,6 +5318,10 @@ free_mbox_log:
 static void remove_one(struct pci_dev *pdev)
 {
 	struct adapter *adapter = pci_get_drvdata(pdev);
+
+#ifdef DEV_NETMAP
+    cxgb4_nm_detach(/*netdev*/);
+#endif /* DEV_NETMAP */
 
 	if (!adapter) {
 		pci_release_regions(pdev);
