@@ -840,52 +840,31 @@ cxgbe_netmap_rxsync(struct netmap_kring *kring, int flags)
 }
 
 static void
-cxgb4_nm_attach(void /*struct vi_info *vi*/)
+cxgb4_nm_attach(struct adapter *adapter)
 {
-#if 0
-	struct port_info *pi;
-	struct adapter *sc;
-
-	assert(vi->nnmrxq > 0);
-	assert(vi->ifp != NULL);
-
-	pi = vi->pi;
-	sc = pi->adapter;
-#endif
 	struct netmap_adapter na;
+    struct net_device *dev = adapter->port[0 /* FIXME */];
+    struct port_info *pi = netdev2pinfo(dev);
 
 	bzero(&na, sizeof(na));
 
-	//na.ifp = vi->ifp;
-	na.na_flags = NAF_BDG_MAYSLEEP;
+	na.ifp = dev;
+    na.pdev = &adapter->pdev->dev;
 
-	/* Netmap doesn't know about the space reserved for the status page. */
-	//na.num_tx_desc = vi->qsize_txq - sc->params.sge.spg_len / EQ_ESIZE;
-
-	/*
-	 * The freelist's cidx/pidx drives netmap's rx cidx/pidx.  So
-	 * num_rx_desc is based on the number of buffers that can be held in the
-	 * freelist, and not the number of entries in the iq.  (These two are
-	 * not exactly the same due to the space taken up by the status page).
-	 */
-	//na.num_rx_desc = rounddown(vi->qsize_rxq, 8);
+	na.num_tx_desc = na.num_rx_desc = adapter->sge.ethtxq[0/*FIXME */].q.size;
 	na.nm_txsync = cxgbe_netmap_txsync;
 	na.nm_rxsync = cxgbe_netmap_rxsync;
 	na.nm_register = cxgbe_netmap_reg;
-	//na.num_tx_rings = vi->nnmtxq;
-	//na.num_rx_rings = vi->nnmrxq;
+    na.num_tx_rings = na.num_rx_rings = pi->nqsets;
 	netmap_attach(&na);
 }
 
 static void
-cxgb4_nm_detach(void /*struct vi_info *vi*/)
+cxgb4_nm_detach(struct adapter *adapter)
 {
-#if 0
-	assert(vi->nnmrxq > 0);
-	assert(vi->ifp != NULL);
+    struct net_device *dev = adapter->port[0 /* FIXME */];
 
-	netmap_detach(vi->ifp);
-#endif
+	netmap_detach(dev);
 }
 
 static inline const void *

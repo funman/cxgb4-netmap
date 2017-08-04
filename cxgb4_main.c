@@ -5233,7 +5233,7 @@ static int init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	setup_fw_sge_queues(adapter);
 
 #ifdef DEV_NETMAP
-    cxgb4_nm_attach(/*adapter*/);
+    cxgb4_nm_attach(adapter);
 #endif /* DEV_NETMAP */
 
 	return 0;
@@ -5320,7 +5320,7 @@ static void remove_one(struct pci_dev *pdev)
 	struct adapter *adapter = pci_get_drvdata(pdev);
 
 #ifdef DEV_NETMAP
-    cxgb4_nm_detach(/*netdev*/);
+    cxgb4_nm_detach(adapter);
 #endif /* DEV_NETMAP */
 
 	if (!adapter) {
