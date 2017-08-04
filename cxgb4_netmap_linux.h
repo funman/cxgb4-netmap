@@ -283,74 +283,52 @@ free_nm_txq_hwq(struct vi_info *vi, struct sge_nm_txq *nm_txq)
 }
 #endif
 
-#if 0
 static int
-cxgbe_netmap_on(struct adapter *sc, struct vi_info *vi, struct ifnet *ifp,
-    struct netmap_adapter *na)
+cxgbe_netmap_on(struct netmap_adapter *na)
 {
 	struct netmap_slot *slot;
-	struct netmap_kring *kring;
-	struct sge_nm_rxq *nm_rxq;
-	struct sge_nm_txq *nm_txq;
-	int rc, i, j, hwidx;
-	struct hw_buf_info *hwb;
+	int rc, i;
 
-	ASSERT_SYNCHRONIZED_OP(sc);
+    struct net_device *dev = na->ifp;
+    struct port_info *pi = netdev_priv(dev);
+    struct adapter *adap = pi->adapter;
 
-	if ((vi->flags & VI_INIT_DONE) == 0 ||
-	    (ifp->if_drv_flags & IFF_DRV_RUNNING) == 0)
-		return (EAGAIN);
-
-	hwb = &sc->sge.hw_buf_info[0];
-	for (i = 0; i < SGE_FLBUF_SIZES; i++, hwb++) {
-		if (hwb->size == NETMAP_BUF_SIZE(na))
-			break;
-	}
-	if (i >= SGE_FLBUF_SIZES) {
-		if_printf(ifp, "no hwidx for netmap buffer size %d.\n",
-		    NETMAP_BUF_SIZE(na));
-		return (ENXIO);
-	}
-	hwidx = i;
+	if ((adap->flags & FULL_INIT_DONE) == 0)
+		return EAGAIN;
 
 	/* Must set caps before calling netmap_reset */
 	nm_set_native_flags(na);
 
-	for_each_nm_rxq(vi, i, nm_rxq) {
-		struct irq *irq = &sc->irq[vi->first_intr + i];
+    /* RX */
+    for (i = 0; i < pi->nqsets; i++) {
+        int j;
 
-		kring = &na->rx_rings[nm_rxq->nid];
-		if (!nm_kring_pending_on(kring) ||
-		    nm_rxq->iq_cntxt_id != INVALID_NM_RXQ_CNTXT_ID)
-			continue;
-
-		//alloc_nm_rxq_hwq(vi, nm_rxq, tnl_cong(vi->pi, nm_cong_drop));
-		nm_rxq->fl_hwidx = hwidx;
+        struct netmap_kring *kring = &na->rx_rings[i];
 		slot = netmap_reset(na, NR_RX, i, 0);
 		assert(slot != NULL);	/* XXXNM: error check, not assert */
 
+//adapter->sge.ethtxq[0/*FIXME */].q.size;
+
 		/* We deal with 8 bufs at a time */
 		assert((na->num_rx_desc & 7) == 0);
-		assert(na->num_rx_desc == nm_rxq->fl_sidx);
-		for (j = 0; j < nm_rxq->fl_sidx; j++) {
+		for (j = 0; j < na->num_rx_desc; j++) {
 			uint64_t ba;
 
 			PNMB(na, &slot[j], &ba);
 			assert(ba != 0);
-			nm_rxq->fl_desc[j] = htobe64(ba | hwidx);
+			//nm_rxq->fl_desc[j] = htobe64(ba);
 		}
 		j = nm_rxq->fl_pidx = nm_rxq->fl_sidx - 8;
 		assert((j & 7) == 0);
 		j /= 8;	/* driver pidx to hardware pidx */
 		wmb();
-		t4_write_reg(sc, sc->sge_kdoorbell_reg,
+		t4_write_reg(sc, adap->sge_kdoorbell_reg,
 		    nm_rxq->fl_db_val | V_PIDX(j));
-
-		atomic_cmpset_int(&irq->nm_state, NM_OFF, NM_ON);
 	}
 
+    /* TX */
 	for_each_nm_txq(vi, i, nm_txq) {
-		kring = &na->tx_rings[nm_txq->nid];
+		struct netmap_kring *kring = &na->tx_rings[nm_txq->nid];
 		if (!nm_kring_pending_on(kring) ||
 		    nm_txq->cntxt_id != INVALID_NM_TXQ_CNTXT_ID)
 			continue;
@@ -374,15 +352,15 @@ cxgbe_netmap_on(struct adapter *sc, struct vi_info *vi, struct ifnet *ifp,
 	rc = -t4_config_rss_range(sc, sc->mbox, vi->viid, 0, vi->rss_size,
 	    vi->nm_rss, vi->rss_size);
 	if (rc != 0)
-		if_printf(ifp, "netmap rss_config failed: %d\n", rc);
+		if_printf(dev, "netmap rss_config failed: %d\n", rc);
 
-	return (rc);
+	return rc;
 }
 
 static int
-cxgbe_netmap_off(struct adapter *sc, struct vi_info *vi, struct ifnet *ifp,
-    struct netmap_adapter *na)
+cxgbe_netmap_off(struct netmap_adapter *na)
 {
+#if 0
 	struct netmap_kring *kring;
 	int rc, i;
 	struct sge_nm_txq *nm_txq;
@@ -432,32 +410,22 @@ cxgbe_netmap_off(struct adapter *sc, struct vi_info *vi, struct ifnet *ifp,
 	}
 
 	return (rc);
-}
+#else
+    return -1;
 #endif
+}
 
 static int
 cxgbe_netmap_reg(struct netmap_adapter *na, int on)
 {
-#if 0
-	struct ifnet *ifp = na->ifp;
-	struct vi_info *vi = ifp->if_softc;
-	struct adapter *sc = vi->pi->adapter;
 	int rc;
 
-	rc = begin_synchronized_op(sc, vi, SLEEP_OK | INTR_OK, "t4nmreg");
-	if (rc != 0)
-		return (rc);
-        /*
 	if (on)
-		rc = cxgbe_netmap_on(sc, vi, ifp, na);
+		rc = cxgbe_netmap_on(na);
 	else
-		rc = cxgbe_netmap_off(sc, vi, ifp, na);
-        */
-	end_synchronized_op(sc, 0);
+		rc = cxgbe_netmap_off(na);
 
-	return (rc);
-#endif
-    return -1;
+	return rc;
 }
 
 /* How many packets can a single type1 WR carry in n descriptors */
