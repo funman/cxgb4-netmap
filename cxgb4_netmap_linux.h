@@ -436,10 +436,13 @@ cxgbe_netmap_reg(struct netmap_adapter *na, int on)
         t4_enable_vi(adapter, adapter->pf, pi->viid, false, false);
     }
 
-	if (on)
+	if (on)  {
 		rc = cxgbe_netmap_on(na);
-	else
-		rc = cxgbe_netmap_off(na);
+        nm_set_native_flags(na);
+    } else {
+        rc = cxgbe_netmap_off(na);
+        nm_clear_native_flags(na);
+    }
 
     if (netif_running(dev)) {
         t4_enable_vi(adapter, adapter->pf, pi->viid, true, true);
@@ -834,10 +837,16 @@ cxgbe_netmap_rxsync(struct netmap_kring *kring, int flags)
 }
 
 static void
-cxgb4_nm_attach(struct adapter *adapter)
+cxgb4_netmap_intr(struct netmap_adapter *na, int onoff)
+{
+    printk(KERN_INFO "%s()\n", __func__);
+}
+
+static void
+cxgb4_nm_attach(struct adapter *adapter, int port)
 {
 	struct netmap_adapter na;
-    struct net_device *dev = adapter->port[0 /* FIXME */];
+    struct net_device *dev = adapter->port[port];
     struct port_info *pi = netdev2pinfo(dev);
 
 	bzero(&na, sizeof(na));
@@ -850,13 +859,15 @@ cxgb4_nm_attach(struct adapter *adapter)
 	na.nm_rxsync = cxgbe_netmap_rxsync;
 	na.nm_register = cxgbe_netmap_reg;
     na.num_tx_rings = na.num_rx_rings = pi->nqsets;
+    na.nm_intr = cxgb4_netmap_intr;
+
 	netmap_attach(&na);
 }
 
 static void
-cxgb4_nm_detach(struct adapter *adapter)
+cxgb4_nm_detach(struct adapter *adapter, int port)
 {
-    struct net_device *dev = adapter->port[0 /* FIXME */];
+    struct net_device *dev = adapter->port[port];
 
 	netmap_detach(dev);
 }

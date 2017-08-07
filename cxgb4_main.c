@@ -5234,7 +5234,9 @@ static int init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	setup_fw_sge_queues(adapter);
 
 #ifdef DEV_NETMAP
-    cxgb4_nm_attach(adapter);
+    for_each_port(adapter, i) {
+        cxgb4_nm_attach(adapter, i);
+    }
 #endif /* DEV_NETMAP */
 
 	return 0;
@@ -5319,9 +5321,12 @@ free_mbox_log:
 static void remove_one(struct pci_dev *pdev)
 {
 	struct adapter *adapter = pci_get_drvdata(pdev);
+    int i;
 
 #ifdef DEV_NETMAP
-    cxgb4_nm_detach(adapter);
+    for_each_port(adapter, i) {
+        cxgb4_nm_detach(adapter, i);
+    }
 #endif /* DEV_NETMAP */
 
 	if (!adapter) {
