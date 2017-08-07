@@ -419,11 +419,22 @@ static int
 cxgbe_netmap_reg(struct netmap_adapter *na, int on)
 {
 	int rc;
+    struct net_device *dev = na->ifp;
+    struct port_info *pi = netdev_priv(dev);
+    struct adapter *adapter = pi->adapter;
+
+    if (netif_running(dev)) {
+        t4_enable_vi(adapter, adapter->pf, pi->viid, false, false);
+    }
 
 	if (on)
 		rc = cxgbe_netmap_on(na);
 	else
 		rc = cxgbe_netmap_off(na);
+
+    if (netif_running(dev)) {
+        t4_enable_vi(adapter, adapter->pf, pi->viid, true, true);
+    }
 
 	return rc;
 }
