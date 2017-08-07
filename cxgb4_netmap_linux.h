@@ -283,6 +283,7 @@ free_nm_txq_hwq(struct vi_info *vi, struct sge_nm_txq *nm_txq)
 }
 #endif
 
+#ifdef CXGB4_MAIN
 static int
 cxgbe_netmap_on(struct netmap_adapter *na)
 {
@@ -420,7 +421,9 @@ cxgbe_netmap_off(struct netmap_adapter *na)
     return -1;
 #endif
 }
+#endif
 
+#ifdef CXGB4_MAIN
 static int
 cxgbe_netmap_reg(struct netmap_adapter *na, int on)
 {
@@ -444,6 +447,7 @@ cxgbe_netmap_reg(struct netmap_adapter *na, int on)
 
 	return rc;
 }
+#endif
 
 /* How many packets can a single type1 WR carry in n descriptors */
 static inline int
@@ -683,6 +687,7 @@ reclaim_nm_tx_desc(struct sge_nm_txq *nm_txq)
 }
 #endif
 
+#ifdef CXGB4_MAIN
 static int
 cxgbe_netmap_txsync(struct netmap_kring *kring, int flags)
 {
@@ -851,6 +856,7 @@ cxgb4_nm_detach(struct adapter *adapter)
 
 	netmap_detach(dev);
 }
+#endif
 
 static inline const void *
 unwrap_nm_fw6_msg(const struct cpl_fw6_msg *cpl)

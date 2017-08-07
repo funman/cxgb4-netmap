@@ -54,6 +54,23 @@
 #include "t4fw_api.h"
 #include "cxgb4_ptp.h"
 
+#if defined(CONFIG_NETMAP) || defined(CONFIG_NETMAP_MODULE)
+/*
+ * The #ifdef DEV_NETMAP / #endif blocks in this file are meant to
+ * be a reference on how to implement netmap support in a driver.
+ * Additional comments are in cxgb4_netmap_linux.h .
+ *
+ * The code is originally developed on FreeBSD and in the interest
+ * of maintainability we try to limit differences between the two systems.
+ *
+ * <cxgb4_netmap_linux.h> contains functions for netmap support
+ * that extend the standard driver.
+ * It also defines DEV_NETMAP so further conditional sections use
+ * that instead of CONFIG_NETMAP
+ */
+#include <cxgb4_netmap_linux.h>
+#endif
+
 /*
  * Rx buffer size.  We use largish buffers if possible but settle for single
  * pages under memory shortage.
@@ -2147,6 +2164,7 @@ static int t4_tx_hststamp(struct adapter *adapter, struct sk_buff *skb,
  *
  *	Process an ingress ethernet packet and deliver it to the stack.
  */
+// XXX
 int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 		     const struct pkt_gl *si)
 {
@@ -2161,6 +2179,10 @@ int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 	u16 err_vec;
 	struct port_info *pi;
 	int ret = 0;
+    struct net_device *dev = q->netdev;
+    struct netmap_adapter *na = NA(dev);
+    struct netmap_kring *kring = &na->rx_rings[q->idx];
+    struct netmap_ring *ring = kring->ring;
 
 	if (unlikely(*(u8 *)rsp == cpl_trace_pkt))
 		return handle_trace_pkt(q->adap, si);
@@ -2496,8 +2518,10 @@ irqreturn_t t4_sge_intr_msix(int irq, void *cookie)
  * Process the indirect interrupt entries in the interrupt queue and kick off
  * NAPI for each queue that has generated an entry.
  */
+//XXX
 static unsigned int process_intrq(struct adapter *adap)
 {
+//
 	unsigned int credits;
 	const struct rsp_ctrl *rc;
 	struct sge_rspq *q = &adap->sge.intrq;
@@ -2710,6 +2734,7 @@ static void __iomem *bar2_address(struct adapter *adapter,
 /* @intr_idx: MSI/MSI-X vector if >=0, -(absolute qid + 1) if < 0
  * @cong: < 0 -> no congestion feedback, >= 0 -> congestion channel map
  */
+// XXX
 int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 		     struct net_device *dev, int intr_idx,
 		     struct sge_fl *fl, rspq_handler_t hnd,

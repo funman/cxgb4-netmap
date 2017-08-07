@@ -95,6 +95,7 @@
  * It also defines DEV_NETMAP so further conditional sections use
  * that instead of CONFIG_NETMAP
  */
+#define CXGB4_MAIN
 #include <cxgb4_netmap_linux.h>
 #endif
 
