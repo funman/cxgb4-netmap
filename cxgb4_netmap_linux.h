@@ -758,19 +758,17 @@ cxgbe_netmap_txsync(struct netmap_kring *kring, int flags)
 static int
 cxgbe_netmap_rxsync(struct netmap_kring *kring, int flags)
 {
-#if 0
 	struct netmap_adapter *na = kring->na;
 	struct netmap_ring *ring = kring->ring;
-	struct ifnet *ifp = na->ifp;
-	struct vi_info *vi = ifp->if_softc;
-	struct adapter *sc = vi->pi->adapter;
-	struct sge_nm_rxq *nm_rxq = &sc->sge.nm_rxq[vi->first_nm_rxq + kring->ring_id];
-	u_int const head = kring->rhead;
-	u_int n;
+	struct net_device *dev = na->ifp;
+	struct adapter *adapter = netdev2adap(dev);
+	unsigned int const head = kring->rhead;
+	unsigned int n;
+	struct sge_eth_rxq *nm_rxq = &adapter->sge.ethrxq[kring->ring_id];
 	int force_update = (flags & NAF_FORCE_READ) || kring->nr_kflags & NKR_PENDINTR;
 
 	if (netmap_no_pendintr || force_update) {
-		kring->nr_hwtail = atomic_load_acq_32(&nm_rxq->fl_cidx);
+		kring->nr_hwtail = nm_rxq->fl.cidx;
 		kring->nr_kflags &= ~NKR_PENDINTR;
 	}
 
@@ -779,10 +777,10 @@ cxgbe_netmap_rxsync(struct netmap_kring *kring, int flags)
 	    kring->nkr_num_slots - kring->nr_hwcur + head;
 	n &= ~7U;
 	if (n > 0) {
-		u_int fl_pidx = nm_rxq->fl_pidx;
+		unsigned int fl_pidx = nm_rxq->fl.pidx;
 		struct netmap_slot *slot = &ring->slot[fl_pidx];
 		uint64_t ba;
-		int i, dbinc = 0, hwidx = nm_rxq->fl_hwidx;
+		int i, dbinc = 0, sidx = kring->nkr_num_slots;
 
 		/*
 		 * We always deal with 8 buffers at a time.  We must have
@@ -792,41 +790,47 @@ cxgbe_netmap_rxsync(struct netmap_kring *kring, int flags)
 		assert((fl_pidx & 7) == 0);
 		assert((n & 7) == 0);
 
-		IDXINCR(kring->nr_hwcur, n, kring->nkr_num_slots);
-		IDXINCR(nm_rxq->fl_pidx, n, nm_rxq->fl_sidx);
+#define IDXINCR(idx, incr, wrap) do { \
+    idx = wrap - idx > incr ? idx + incr : incr - (wrap - idx); \
+} while (0)
+
+		IDXINCR(kring->nr_hwcur, n, sidx);
+		IDXINCR(nm_rxq->fl.pidx, n, sidx);
 
 		while (n > 0) {
 			for (i = 0; i < 8; i++, fl_pidx++, slot++) {
 				PNMB(na, slot, &ba);
 				assert(ba != 0);
-				nm_rxq->fl_desc[fl_pidx] = htobe64(ba | hwidx);
+				nm_rxq->fl.desc[fl_pidx] = __cpu_to_be64(ba);
 				slot->flags &= ~NS_BUF_CHANGED;
-				assert(fl_pidx <= nm_rxq->fl_sidx);
+				assert(fl_pidx <= sidx);
 			}
 			n -= 8;
-			if (fl_pidx == nm_rxq->fl_sidx) {
+			if (fl_pidx == sidx) {
 				fl_pidx = 0;
 				slot = &ring->slot[0];
 			}
+            #if 0
 			if (++dbinc == 8 && n >= 32) {
 				wmb();
-				t4_write_reg(sc, sc->sge_kdoorbell_reg,
-				    nm_rxq->fl_db_val | V_PIDX(dbinc));
+				t4_write_reg(adapter, MYPF_REG(SGE_PF_KDOORBELL_A),
+				    nm_rxq->fl.db_val | V_PIDX(dbinc));
 				dbinc = 0;
 			}
+            #endif
 		}
-		assert(nm_rxq->fl_pidx == fl_pidx);
+		assert(nm_rxq->fl.pidx == fl_pidx);
 
+#if 0
 		if (dbinc > 0) {
 			wmb();
-			t4_write_reg(sc, sc->sge_kdoorbell_reg,
-			    nm_rxq->fl_db_val | V_PIDX(dbinc));
+			t4_write_reg(adapter, MYPF_REG(SGE_PF_KDOORBELL_A),
+			    nm_rxq->fl.db_val | V_PIDX(dbinc));
 		}
+#endif
 	}
 
-	return (0);
-#endif
-    return -1;
+	return 0;
 }
 
 static void
