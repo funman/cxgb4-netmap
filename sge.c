@@ -2180,9 +2180,7 @@ int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 	struct port_info *pi;
 	int ret = 0;
     struct net_device *dev = q->netdev;
-    struct netmap_adapter *na = NA(dev);
-    struct netmap_kring *kring = &na->rx_rings[q->idx];
-    struct netmap_ring *ring = kring->ring;
+    int work_done;
 
 	if (unlikely(*(u8 *)rsp == cpl_trace_pkt))
 		return handle_trace_pkt(q->adap, si);
@@ -2201,6 +2199,9 @@ int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 		do_gro(rxq, si, pkt);
 		return 0;
 	}
+
+    netmap_rx_irq(dev, q->idx, &work_done);
+    return 0;
 
 	skb = cxgb4_pktgl_to_skb(si, RX_PKT_SKB_LEN, RX_PULL_LEN);
 	if (unlikely(!skb)) {
