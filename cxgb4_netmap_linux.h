@@ -303,7 +303,7 @@ cxgbe_netmap_on(struct netmap_adapter *na)
     for (i = 0; i < pi->nqsets; i++) {
         int j;
 
-        struct netmap_kring *kring = &na->rx_rings[i];
+        //struct netmap_kring *kring = &na->rx_rings[i];
 		slot = netmap_reset(na, NR_RX, i, 0);
 		assert(slot != NULL);	/* XXXNM: error check, not assert */
 
@@ -318,15 +318,18 @@ cxgbe_netmap_on(struct netmap_adapter *na)
 			assert(ba != 0);
 			//nm_rxq->fl_desc[j] = htobe64(ba);
 		}
+        #if 0
 		j = nm_rxq->fl_pidx = nm_rxq->fl_sidx - 8;
 		assert((j & 7) == 0);
 		j /= 8;	/* driver pidx to hardware pidx */
 		wmb();
 		t4_write_reg(sc, adap->sge_kdoorbell_reg,
 		    nm_rxq->fl_db_val | V_PIDX(j));
+            #endif
 	}
 
     /* TX */
+    #if 0
 	for_each_nm_txq(vi, i, nm_txq) {
 		struct netmap_kring *kring = &na->tx_rings[nm_txq->nid];
 		if (!nm_kring_pending_on(kring) ||
@@ -351,6 +354,9 @@ cxgbe_netmap_on(struct netmap_adapter *na)
 	}
 	rc = -t4_config_rss_range(sc, sc->mbox, vi->viid, 0, vi->rss_size,
 	    vi->nm_rss, vi->rss_size);
+    #else
+    rc = 0;
+    #endif
 	if (rc != 0)
 		if_printf(dev, "netmap rss_config failed: %d\n", rc);
 
