@@ -287,7 +287,6 @@ free_nm_txq_hwq(struct vi_info *vi, struct sge_nm_txq *nm_txq)
 static int
 cxgbe_netmap_on(struct netmap_adapter *na)
 {
-	struct netmap_slot *slot;
 	int rc, i;
 
     struct net_device *dev = na->ifp;
@@ -303,12 +302,10 @@ cxgbe_netmap_on(struct netmap_adapter *na)
     /* RX */
     for (i = 0; i < pi->nqsets; i++) {
         int j;
-
-        //struct netmap_kring *kring = &na->rx_rings[i];
-		slot = netmap_reset(na, NR_RX, i, 0);
+        struct netmap_kring *kring = &na->rx_rings[i];
+        struct sge_eth_rxq *nm_rxq = &adap->sge.ethrxq[kring->ring_id];
+        struct netmap_slot *slot = netmap_reset(na, NR_RX, i, 0);
 		assert(slot != NULL);	/* XXXNM: error check, not assert */
-
-//adapter->sge.ethtxq[0/*FIXME */].q.size;
 
 		/* We deal with 8 bufs at a time */
 		assert((na->num_rx_desc & 7) == 0);
@@ -317,16 +314,15 @@ cxgbe_netmap_on(struct netmap_adapter *na)
 
 			PNMB(na, &slot[j], &ba);
 			assert(ba != 0);
-			//nm_rxq->fl_desc[j] = htobe64(ba);
+			nm_rxq->fl.desc[j] = __cpu_to_be64(ba);
 		}
-        #if 0
-		j = nm_rxq->fl_pidx = nm_rxq->fl_sidx - 8;
+
+		j = nm_rxq->fl.pidx = na->num_rx_desc - 8;
 		assert((j & 7) == 0);
 		j /= 8;	/* driver pidx to hardware pidx */
 		wmb();
-		t4_write_reg(sc, adap->sge_kdoorbell_reg,
-		    nm_rxq->fl_db_val | V_PIDX(j));
-            #endif
+		t4_write_reg(adap, MYPF_REG(SGE_PF_KDOORBELL_A),
+            QID_V(nm_rxq->fl.cntxt_id) | PIDX_V(j));
 	}
 
     /* TX */
