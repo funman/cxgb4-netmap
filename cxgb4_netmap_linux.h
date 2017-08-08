@@ -438,10 +438,8 @@ cxgbe_netmap_reg(struct netmap_adapter *na, int on)
 
 	if (on)  {
 		rc = cxgbe_netmap_on(na);
-        nm_set_native_flags(na);
     } else {
         rc = cxgbe_netmap_off(na);
-        nm_clear_native_flags(na);
     }
 
     if (netif_running(dev)) {
