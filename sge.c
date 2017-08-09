@@ -2179,7 +2179,6 @@ int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 	u16 err_vec;
 	struct port_info *pi;
 	int ret = 0;
-    struct net_device *dev = q->netdev;
 
 	if (unlikely(*(u8 *)rsp == cpl_trace_pkt))
 		return handle_trace_pkt(q->adap, si);
@@ -2360,6 +2359,7 @@ static int process_responses(struct sge_rspq *q, int budget)
 	struct sge_eth_rxq *rxq = container_of(q, struct sge_eth_rxq, rspq);
 	struct adapter *adapter = q->adap;
 	struct sge *s = &adapter->sge;
+    int work_done, nm_irq;
 
 	while (likely(budget_left)) {
 		rc = (void *)q->cur_desc + (q->iqe_len - sizeof(*rc));
@@ -2416,7 +2416,6 @@ static int process_responses(struct sge_rspq *q, int budget)
 			si.nfrags = frags + 1;
 			ret = q->handler(q, q->cur_desc, &si);
 
-            int work_done, nm_irq;
             nm_irq = netmap_rx_irq(q->netdev, q->idx, &work_done);
             if (nm_irq != NM_IRQ_PASS)
                 return (nm_irq == NM_IRQ_RESCHED) ? budget : 1;
