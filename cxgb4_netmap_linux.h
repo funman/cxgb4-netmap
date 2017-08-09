@@ -74,7 +74,7 @@ cxgbe_netmap_on(struct netmap_adapter *na)
 	}
 
     /* TX */
-    #if 0
+#if 0
 	for_each_nm_txq(vi, i, nm_txq) {
 		struct netmap_kring *kring = &na->tx_rings[nm_txq->nid];
 		if (!nm_kring_pending_on(kring) ||
@@ -99,9 +99,9 @@ cxgbe_netmap_on(struct netmap_adapter *na)
 	}
 	rc = -t4_config_rss_range(sc, sc->mbox, vi->viid, 0, vi->rss_size,
 	    vi->nm_rss, vi->rss_size);
-    #else
+#else
     rc = 0;
-    #endif
+#endif
 	if (rc != 0)
 		if_printf(dev, "netmap rss_config failed: %d\n", rc);
 
