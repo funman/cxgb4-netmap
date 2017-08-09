@@ -495,7 +495,7 @@ ring_nm_txq_db(struct adapter *sc, struct sge_nm_txq *nm_txq)
 
 	switch (ffs(db) - 1) {
 	case DOORBELL_UDB:
-		*nm_txq->udb = htole32(V_QID(nm_txq->udb_qid) | V_PIDX(n));
+		*nm_txq->udb = htole32(V_QID(nm_txq->udb_qid) | PIDX_V(n));
 		break;
 
 	case DOORBELL_WCWR: {
@@ -520,13 +520,13 @@ ring_nm_txq_db(struct adapter *sc, struct sge_nm_txq *nm_txq)
 	}
 
 	case DOORBELL_UDBWC:
-		*nm_txq->udb = htole32(V_QID(nm_txq->udb_qid) | V_PIDX(n));
+		*nm_txq->udb = htole32(V_QID(nm_txq->udb_qid) | PIDX_V(n));
 		wmb();
 		break;
 
 	case DOORBELL_KDB:
 		t4_write_reg(sc, sc->sge_kdoorbell_reg,
-		    V_QID(nm_txq->cntxt_id) | V_PIDX(n));
+		    V_QID(nm_txq->cntxt_id) | PIDX_V(n));
 		break;
 	}
 	nm_txq->dbidx = nm_txq->pidx;
@@ -775,6 +775,7 @@ cxgbe_netmap_rxsync(struct netmap_kring *kring, int flags)
 	n &= ~7U;
 	if (n > 0) {
 		unsigned int fl_pidx = nm_rxq->fl.pidx;
+        int db_val = QID_V(nm_rxq->fl.cntxt_id) | adapter->params.arch.sge_fl_db;
 		struct netmap_slot *slot = &ring->slot[fl_pidx];
 		uint64_t ba;
 		int i, dbinc = 0, sidx = kring->nkr_num_slots;
@@ -807,24 +808,20 @@ cxgbe_netmap_rxsync(struct netmap_kring *kring, int flags)
 				fl_pidx = 0;
 				slot = &ring->slot[0];
 			}
-            #if 0
 			if (++dbinc == 8 && n >= 32) {
 				wmb();
 				t4_write_reg(adapter, MYPF_REG(SGE_PF_KDOORBELL_A),
-				    nm_rxq->fl.db_val | V_PIDX(dbinc));
+				    db_val | PIDX_V(dbinc));
 				dbinc = 0;
 			}
-            #endif
 		}
 		assert(nm_rxq->fl.pidx == fl_pidx);
 
-#if 0
 		if (dbinc > 0) {
 			wmb();
 			t4_write_reg(adapter, MYPF_REG(SGE_PF_KDOORBELL_A),
-			    nm_rxq->fl.db_val | V_PIDX(dbinc));
+			    db_val | PIDX_V(dbinc));
 		}
-#endif
 	}
 
 	return 0;
