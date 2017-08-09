@@ -37,6 +37,11 @@
 
 #if defined(linux)
 
+#define CONFIG_NETMAP_VALE
+#define CONFIG_NETMAP_GENERIC
+#define CONFIG_NETMAP_MONITOR
+#define CONFIG_NETMAP_PIPE
+
 #if  defined(CONFIG_NETMAP_VALE)
 #define WITH_VALE
 #endif
