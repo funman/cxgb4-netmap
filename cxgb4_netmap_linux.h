@@ -29,7 +29,10 @@
 #include <net/netmap.h>
 #include <netmap/netmap_kern.h>
 
-#define assert(x) 
+#define assert(x) do { \
+    if (!(x)) \
+        printk(KERN_INFO "%s:%d : %s failed!\n", __func__, __LINE__, #x); \
+} while (0)
 
 #ifdef CXGB4_MAIN
 static int
