@@ -2180,7 +2180,6 @@ int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 	struct port_info *pi;
 	int ret = 0;
     struct net_device *dev = q->netdev;
-    int work_done, nm_irq;
 
 	if (unlikely(*(u8 *)rsp == cpl_trace_pkt))
 		return handle_trace_pkt(q->adap, si);
@@ -2199,10 +2198,6 @@ int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 		do_gro(rxq, si, pkt);
 		return 0;
 	}
-
-    nm_irq = netmap_rx_irq(dev, q->idx, &work_done);
-    if (nm_irq != NM_IRQ_PASS)
-        return (nm_irq == NM_IRQ_RESCHED) ? budget : 1;
 
 	skb = cxgb4_pktgl_to_skb(si, RX_PKT_SKB_LEN, RX_PULL_LEN);
 	if (unlikely(!skb)) {
@@ -2420,6 +2415,12 @@ static int process_responses(struct sge_rspq *q, int budget)
 
 			si.nfrags = frags + 1;
 			ret = q->handler(q, q->cur_desc, &si);
+
+            int work_done, nm_irq;
+            nm_irq = netmap_rx_irq(q->netdev, q->idx, &work_done);
+            if (nm_irq != NM_IRQ_PASS)
+                return (nm_irq == NM_IRQ_RESCHED) ? budget : 1;
+
 			if (likely(ret == 0))
 				q->offset += ALIGN(fp->size, s->fl_align);
 			else
