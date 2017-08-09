@@ -33,7 +33,7 @@
 
 #ifdef CXGB4_MAIN
 static int
-cxgbe_netmap_on(struct netmap_adapter *na)
+cxgb4_netmap_on(struct netmap_adapter *na)
 {
 	int rc, i;
 
@@ -109,7 +109,7 @@ cxgbe_netmap_on(struct netmap_adapter *na)
 }
 
 static int
-cxgbe_netmap_off(struct netmap_adapter *na)
+cxgb4_netmap_off(struct netmap_adapter *na)
 {
 #if 0
 	struct netmap_kring *kring;
@@ -167,7 +167,7 @@ cxgbe_netmap_off(struct netmap_adapter *na)
 }
 
 static int
-cxgbe_netmap_reg(struct netmap_adapter *na, int on)
+cxgb4_netmap_reg(struct netmap_adapter *na, int on)
 {
 	int rc;
     struct net_device *dev = na->ifp;
@@ -179,9 +179,9 @@ cxgbe_netmap_reg(struct netmap_adapter *na, int on)
     }
 
 	if (on)  {
-		rc = cxgbe_netmap_on(na);
+		rc = cxgb4_netmap_on(na);
     } else {
-        rc = cxgbe_netmap_off(na);
+        rc = cxgb4_netmap_off(na);
     }
 
     if (netif_running(dev)) {
@@ -192,7 +192,7 @@ cxgbe_netmap_reg(struct netmap_adapter *na, int on)
 }
 
 static int
-cxgbe_netmap_txsync(struct netmap_kring *kring, int flags)
+cxgb4_netmap_txsync(struct netmap_kring *kring, int flags)
 {
 #if 0
 	struct netmap_adapter *na = kring->na;
@@ -237,7 +237,7 @@ cxgbe_netmap_txsync(struct netmap_kring *kring, int flags)
 
 		/* Send n packets and update nm_txq->pidx and kring->nr_hwcur */
 		npkt_remaining -= n;
-		//cxgbe_nm_tx(sc, nm_txq, kring, n, npkt_remaining, txcsum);
+		//cxgb4_nm_tx(sc, nm_txq, kring, n, npkt_remaining, txcsum);
 	}
 	assert(npkt_remaining == 0);
 	assert(kring->nr_hwcur == head);
@@ -259,7 +259,7 @@ cxgbe_netmap_txsync(struct netmap_kring *kring, int flags)
 }
 
 static int
-cxgbe_netmap_rxsync(struct netmap_kring *kring, int flags)
+cxgb4_netmap_rxsync(struct netmap_kring *kring, int flags)
 {
 	struct netmap_adapter *na = kring->na;
 	struct netmap_ring *ring = kring->ring;
@@ -352,9 +352,9 @@ cxgb4_nm_attach(struct adapter *adapter, int port)
     na.pdev = &adapter->pdev->dev;
 
 	na.num_tx_desc = na.num_rx_desc = adapter->sge.ethtxq[0/*FIXME */].q.size;
-	na.nm_txsync = cxgbe_netmap_txsync;
-	na.nm_rxsync = cxgbe_netmap_rxsync;
-	na.nm_register = cxgbe_netmap_reg;
+	na.nm_txsync = cxgb4_netmap_txsync;
+	na.nm_rxsync = cxgb4_netmap_rxsync;
+	na.nm_register = cxgb4_netmap_reg;
     na.num_tx_rings = na.num_rx_rings = pi->nqsets;
     na.nm_intr = cxgb4_netmap_intr;
 
