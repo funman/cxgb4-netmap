@@ -162,7 +162,8 @@ cxgb4_netmap_off(struct netmap_adapter *na)
 
 	return (rc);
 #else
-    return -1;
+	nm_clear_native_flags(na);
+    return 0;
 #endif
 }
 
