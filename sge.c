@@ -2405,6 +2405,9 @@ static int process_responses(struct sge_rspq *q, int budget)
 			si.nfrags = frags + 1;
 			ret = q->handler(q, q->cur_desc, &si);
 
+            if (++rxq->fl.cidx == rxq->fl.size)
+                rxq->fl.cidx = 0;
+
             nm_irq = netmap_rx_irq(q->netdev, q->idx, &work_done);
             if (nm_irq != NM_IRQ_PASS)
                 return (nm_irq == NM_IRQ_RESCHED) ? budget : 1;
