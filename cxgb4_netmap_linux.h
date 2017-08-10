@@ -54,7 +54,7 @@ cxgb4_netmap_on(struct netmap_adapter *na)
     for (i = 0; i < pi->nqsets; i++) {
         int j;
         struct netmap_kring *kring = &na->rx_rings[i];
-        struct sge_eth_rxq *nm_rxq = &adap->sge.ethrxq[kring->ring_id];
+        struct sge_eth_rxq *nm_rxq = &adap->sge.ethrxq[kring->ring_id + pi->first_qset];
         struct netmap_slot *slot = netmap_reset(na, NR_RX, i, 0);
 		assert(slot != NULL);	/* XXXNM: error check, not assert */
 
@@ -271,7 +271,8 @@ cxgb4_netmap_rxsync(struct netmap_kring *kring, int flags)
 	struct adapter *adapter = netdev2adap(dev);
 	unsigned int const head = kring->rhead;
 	unsigned int n;
-	struct sge_eth_rxq *nm_rxq = &adapter->sge.ethrxq[kring->ring_id];
+    struct port_info *pi = netdev2pinfo(dev);
+	struct sge_eth_rxq *nm_rxq = &adapter->sge.ethrxq[kring->ring_id + pi->first_qset];
 	int force_update = (flags & NAF_FORCE_READ) || kring->nr_kflags & NKR_PENDINTR;
 
 	if (netmap_no_pendintr || force_update) {
