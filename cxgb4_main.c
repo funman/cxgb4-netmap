@@ -2216,7 +2216,7 @@ static void update_clip(const struct adapter *adap)
  */
 static int cxgb_up(struct adapter *adap)
 {
-	int err, i;
+	int err;
 
 	mutex_lock(&uld_mutex);
 	err = setup_sge_queues(adap);
@@ -2255,14 +2255,6 @@ static int cxgb_up(struct adapter *adap)
 #if IS_ENABLED(CONFIG_IPV6)
 	update_clip(adap);
 #endif
-
-#ifdef DEV_NETMAP
-    /* enable transmits */
-	for_each_port(adap, i) {
-        netif_tx_start_all_queues(adap->port[i]);
-    }
-#endif
-
 	/* Initialize hash mac addr list*/
 	INIT_LIST_HEAD(&adap->mac_hlist);
 	return err;
