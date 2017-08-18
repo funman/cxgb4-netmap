@@ -2153,7 +2153,6 @@ static int t4_tx_hststamp(struct adapter *adapter, struct sk_buff *skb,
  *
  *	Process an ingress ethernet packet and deliver it to the stack.
  */
-// XXX
 int t4_ethrx_handler(struct sge_rspq *q, const __be64 *rsp,
 		     const struct pkt_gl *si)
 {
@@ -2327,6 +2326,113 @@ static inline void rspq_next(struct sge_rspq *q)
 	}
 }
 
+static int process_responses_nm(struct netmap_adapter *na, struct sge_rspq *q, int budget)
+{
+	int ret, rsp_type;
+	int budget_left = budget;
+	struct sge_eth_rxq *rxq = container_of(q, struct sge_eth_rxq, rspq);
+	struct adapter *adapter = q->adap;
+	struct sge *s = &adapter->sge;
+    int work_done, nm_irq;
+
+	while (likely(budget_left)) {
+        const struct rsp_ctrl *rc = (void *)q->cur_desc + (q->iqe_len - sizeof(*rc));
+		if (!is_new_response(rc, q)) {
+			if (q->flush_handler)
+				q->flush_handler(q);
+			break;
+		}
+
+		dma_rmb();
+		rsp_type = RSPD_TYPE_G(rc->type_gen);
+		if (likely(rsp_type == RSPD_TYPE_FLBUF_X)) {
+			struct page_frag *fp;
+			struct pkt_gl si;
+			const struct rx_sw_desc *rsd;
+			u32 len = ntohl(rc->pldbuflen_qid), bufsz, frags;
+
+			if (len & RSPD_NEWBUF_F) {
+				if (likely(q->offset > 0)) {
+					free_rx_bufs(q->adap, &rxq->fl, 1);
+					q->offset = 0;
+				}
+				len = RSPD_LEN_G(len);
+			}
+			si.tot_len = len;
+
+			/* gather packet fragments */
+			for (frags = 0, fp = si.frags; ; frags++, fp++) {
+				rsd = &rxq->fl.sdesc[rxq->fl.cidx];
+				bufsz = get_buf_size(adapter, rsd);
+				fp->page = rsd->page;
+				fp->offset = q->offset;
+				fp->size = min(bufsz, len);
+				len -= fp->size;
+				if (!len)
+					break;
+				unmap_rx_buf(q->adap, &rxq->fl);
+			}
+
+			si.sgetstamp = SGE_TIMESTAMP_G(
+					be64_to_cpu(rc->last_flit));
+			/*
+			 * Last buffer remains mapped so explicitly make it
+			 * coherent for CPU access.
+			 */
+			dma_sync_single_for_cpu(q->adap->pdev_dev,
+						get_buf_addr(rsd),
+						fp->size, DMA_FROM_DEVICE);
+
+			si.va = page_address(si.frags[0].page) +
+				si.frags[0].offset;
+			prefetch(si.va);
+
+			si.nfrags = frags + 1;
+
+            ret = 0;//q->handler(q, q->cur_desc, &si);
+
+            if (nm_netmap_on(na)) {
+                struct netmap_kring *kring = &na->rx_rings[q->idx];
+                struct netmap_ring *ring = kring->ring;
+                ring->slot[rxq->fl.cidx].flags = kring->nkr_slot_flags;
+                ring->slot[rxq->fl.cidx].len = si.tot_len;
+            }
+
+			if (likely(ret == 0))
+				q->offset += ALIGN(fp->size, s->fl_align);
+			else
+				restore_rx_bufs(&si, &rxq->fl, frags);
+		} else if (likely(rsp_type == RSPD_TYPE_CPL_X)) {
+			ret = q->handler(q, q->cur_desc, NULL);
+		} else {
+			ret = q->handler(q, (const __be64 *)rc, CXGB4_MSG_AN);
+		}
+
+		if (unlikely(ret)) {
+			/* couldn't process descriptor, back off for recovery */
+			q->next_intr_params = QINTR_TIMER_IDX_V(NOMEM_TMR_IDX);
+			break;
+		}
+
+		rspq_next(q);
+        if (++rxq->fl.cidx == rxq->fl.size)
+            rxq->fl.cidx = 0;
+		budget_left--;
+	}
+
+	if (q->offset >= 0 && fl_cap(&rxq->fl) - rxq->fl.avail >= 16)
+		__refill_fl(q->adap, &rxq->fl);
+
+    budget -= budget_left;
+
+    nm_irq = netmap_rx_irq(q->netdev, q->idx, &work_done);
+    if (nm_irq != NM_IRQ_PASS) {
+        return (nm_irq == NM_IRQ_RESCHED) ? budget : 1;
+    }
+
+	return budget;
+}
+
 /**
  *	process_responses - process responses from an SGE response queue
  *	@q: the ingress queue to process
@@ -2348,7 +2454,10 @@ static int process_responses(struct sge_rspq *q, int budget)
 	struct sge_eth_rxq *rxq = container_of(q, struct sge_eth_rxq, rspq);
 	struct adapter *adapter = q->adap;
 	struct sge *s = &adapter->sge;
-    int work_done, nm_irq;
+    struct netmap_adapter *na = NA(q->netdev);
+    if (nm_netmap_on(na)) {
+        return process_responses_nm(na, q, budget);
+    }
 
 	while (likely(budget_left)) {
 		rc = (void *)q->cur_desc + (q->iqe_len - sizeof(*rc));
@@ -2403,15 +2512,7 @@ static int process_responses(struct sge_rspq *q, int budget)
 			prefetch(si.va);
 
 			si.nfrags = frags + 1;
-			ret = q->handler(q, q->cur_desc, &si);
-
-            if (++rxq->fl.cidx == rxq->fl.size)
-                rxq->fl.cidx = 0;
-
-            nm_irq = netmap_rx_irq(q->netdev, q->idx, &work_done);
-            if (nm_irq != NM_IRQ_PASS)
-                return (nm_irq == NM_IRQ_RESCHED) ? budget : 1;
-
+            ret = q->handler(q, q->cur_desc, &si);
 			if (likely(ret == 0))
 				q->offset += ALIGN(fp->size, s->fl_align);
 			else
@@ -2512,10 +2613,8 @@ irqreturn_t t4_sge_intr_msix(int irq, void *cookie)
  * Process the indirect interrupt entries in the interrupt queue and kick off
  * NAPI for each queue that has generated an entry.
  */
-//XXX
 static unsigned int process_intrq(struct adapter *adap)
 {
-//
 	unsigned int credits;
 	const struct rsp_ctrl *rc;
 	struct sge_rspq *q = &adap->sge.intrq;
@@ -2728,7 +2827,6 @@ static void __iomem *bar2_address(struct adapter *adapter,
 /* @intr_idx: MSI/MSI-X vector if >=0, -(absolute qid + 1) if < 0
  * @cong: < 0 -> no congestion feedback, >= 0 -> congestion channel map
  */
-// XXX
 int t4_sge_alloc_rxq(struct adapter *adap, struct sge_rspq *iq, bool fwevtq,
 		     struct net_device *dev, int intr_idx,
 		     struct sge_fl *fl, rspq_handler_t hnd,
