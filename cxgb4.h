@@ -535,7 +535,14 @@ enum {
 	ULP_CRYPTO_LOOKASIDE = 1 << 0,
 };
 
-struct rx_sw_desc;
+struct rx_sw_desc {                /* SW state per Rx descriptor */
+    struct page *page;
+    dma_addr_t dma_addr;
+};
+
+
+void set_rx_sw_desc(struct rx_sw_desc *sd, struct page *pg,
+                  dma_addr_t mapping);
 
 struct sge_fl {                     /* SGE free-buffer queue state */
 	unsigned int avail;         /* # of available Rx buffers */

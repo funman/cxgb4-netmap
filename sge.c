@@ -145,11 +145,6 @@ struct tx_sw_desc {                /* SW state per Tx descriptor */
 	struct ulptx_sgl *sgl;
 };
 
-struct rx_sw_desc {                /* SW state per Rx descriptor */
-	struct page *page;
-	dma_addr_t dma_addr;
-};
-
 /*
  * Rx buffer sizes for "useskbs" Free List buffers (one ingress packet pe skb
  * buffer).  We currently only support two sizes for 1500- and 9000-byte MTUs.
@@ -486,6 +481,8 @@ static inline int get_buf_size(struct adapter *adapter,
  */
 static void free_rx_bufs(struct adapter *adap, struct sge_fl *q, int n)
 {
+    nm_prinf("%s(%p, %p, %d)\n", __func__, adap, q, n);
+
 	while (n--) {
 		struct rx_sw_desc *d = &q->sdesc[q->cidx];
 
@@ -515,6 +512,7 @@ static void free_rx_bufs(struct adapter *adap, struct sge_fl *q, int n)
 static void unmap_rx_buf(struct adapter *adap, struct sge_fl *q)
 {
 	struct rx_sw_desc *d = &q->sdesc[q->cidx];
+    nm_prinf("%s(%p, %p)\n", __func__, adap, q);
 
 	if (is_buf_mapped(d))
 		dma_unmap_page(adap->pdev_dev, get_buf_addr(d),
@@ -560,7 +558,7 @@ static inline void ring_fl_db(struct adapter *adap, struct sge_fl *q)
 	}
 }
 
-static inline void set_rx_sw_desc(struct rx_sw_desc *sd, struct page *pg,
+void set_rx_sw_desc(struct rx_sw_desc *sd, struct page *pg,
 				  dma_addr_t mapping)
 {
 	sd->page = pg;
@@ -591,6 +589,8 @@ static unsigned int refill_fl(struct adapter *adap, struct sge_fl *q, int n,
 	__be64 *d = &q->desc[q->pidx];
 	struct rx_sw_desc *sd = &q->sdesc[q->pidx];
 	int node;
+
+    nm_prinf("%s(%p, %p, %d)\n", __func__, adap, q, n);
 
 #ifdef CONFIG_DEBUG_FS
 	if (test_bit(q->cntxt_id - adap->sge.egr_start, adap->sge.blocked_fl))
@@ -2283,6 +2283,7 @@ static void restore_rx_bufs(const struct pkt_gl *si, struct sge_fl *q,
 			    int frags)
 {
 	struct rx_sw_desc *d;
+    nm_prinf("%s(%p)\n", __func__, q);
 
 	while (frags--) {
 		if (q->cidx == 0)
@@ -2335,6 +2336,7 @@ static int process_responses_nm(struct netmap_adapter *na, struct sge_rspq *q, i
 	struct sge *s = &adapter->sge;
     int work_done, nm_irq;
 
+    nm_prinf("%s(%p, %p)\n", __func__, adapter, &rxq->fl);
 	while (likely(budget_left)) {
         const struct rsp_ctrl *rc = (void *)q->cur_desc + (q->iqe_len - sizeof(*rc));
 		if (!is_new_response(rc, q)) {
@@ -2349,11 +2351,13 @@ static int process_responses_nm(struct netmap_adapter *na, struct sge_rspq *q, i
 			struct page_frag *fp;
 			struct pkt_gl si;
 			const struct rx_sw_desc *rsd;
+            struct netmap_kring *kring = &na->rx_rings[q->idx];
+            struct netmap_ring *ring = kring->ring;
 			u32 len = ntohl(rc->pldbuflen_qid), bufsz, frags;
 
 			if (len & RSPD_NEWBUF_F) {
 				if (likely(q->offset > 0)) {
-					free_rx_bufs(q->adap, &rxq->fl, 1);
+//					free_rx_bufs(q->adap, &rxq->fl, 1);
 					q->offset = 0;
 				}
 				len = RSPD_LEN_G(len);
@@ -2364,6 +2368,7 @@ static int process_responses_nm(struct netmap_adapter *na, struct sge_rspq *q, i
 			for (frags = 0, fp = si.frags; ; frags++, fp++) {
 				rsd = &rxq->fl.sdesc[rxq->fl.cidx];
 				bufsz = get_buf_size(adapter, rsd);
+                nm_prinf("%s, frags = %d bufsz %u offset %u\n", __func__, frags, bufsz, q->offset);
 				fp->page = rsd->page;
 				fp->offset = q->offset;
 				fp->size = min(bufsz, len);
@@ -2389,19 +2394,24 @@ static int process_responses_nm(struct netmap_adapter *na, struct sge_rspq *q, i
 
 			si.nfrags = frags + 1;
 
+            nm_prinf("%s(%p), q->cidx %u, rxq->fl.cidx %u, totlen %u, 0x%.2x%.2x%.2x%.2x%.2x",
+                    __func__, si.va, q->cidx, rxq->fl.cidx, si.tot_len,
+                ((char*)si.va)[0],
+                ((char*)si.va)[1],
+                ((char*)si.va)[2],
+                ((char*)si.va)[3],
+                ((char*)si.va)[4]);
+
             ret = 0;//q->handler(q, q->cur_desc, &si);
 
-            if (nm_netmap_on(na)) {
-                struct netmap_kring *kring = &na->rx_rings[q->idx];
-                struct netmap_ring *ring = kring->ring;
-                ring->slot[rxq->fl.cidx].flags = kring->nkr_slot_flags;
-                ring->slot[rxq->fl.cidx].len = si.tot_len;
-            }
+            ring->slot[q->cidx].flags = kring->nkr_slot_flags;
+            ring->slot[q->cidx].len = si.tot_len;
 
 			if (likely(ret == 0))
 				q->offset += ALIGN(fp->size, s->fl_align);
-			else
+/*			else
 				restore_rx_bufs(&si, &rxq->fl, frags);
+*/
 		} else if (likely(rsp_type == RSPD_TYPE_CPL_X)) {
 			ret = q->handler(q, q->cur_desc, NULL);
 		} else {

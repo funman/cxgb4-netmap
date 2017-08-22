@@ -56,16 +56,28 @@ cxgb4_netmap_on(struct netmap_adapter *na)
         struct netmap_kring *kring = &na->rx_rings[i];
         struct sge_eth_rxq *nm_rxq = &adap->sge.ethrxq[kring->ring_id + pi->first_qset];
         struct netmap_slot *slot = netmap_reset(na, NR_RX, i, 0);
+        uint64_t hwidx;
 		assert(slot != NULL);	/* XXXNM: error check, not assert */
+
+        if (adap->sge.fl_pg_order == 0) {
+            hwidx = 0;
+        } else {
+            hwidx = 1;//RX_LARGE_PG_BUF;
+        }
 
 		/* We deal with 8 bufs at a time */
 		assert((na->num_rx_desc & 7) == 0);
 		for (j = 0; j < na->num_rx_desc; j++) {
 			uint64_t ba;
-
-			PNMB(na, &slot[j], &ba);
+			//uint64_t hwidx = nm_rxq->fl.desc[j] & 0x1f;
+			void *p = PNMB(na, &slot[j], &ba);
+			struct page *pg = virt_to_page(p);
+            printk(KERN_INFO "[%u] FL %p PHYS 0x%llx VIRT %p HWIDX %llu PG ORDER %u\n",
+                j, &nm_rxq->fl, ba, p, hwidx, adap->sge.fl_pg_order);
 			assert(ba != 0);
+            ba |= hwidx;
 			nm_rxq->fl.desc[j] = __cpu_to_be64(ba);
+			set_rx_sw_desc(&nm_rxq->fl.sdesc[j], pg, ba);
 		}
 
 		j = nm_rxq->fl.pidx = na->num_rx_desc - 8;
@@ -276,7 +288,7 @@ cxgb4_netmap_rxsync(struct netmap_kring *kring, int flags)
 	int force_update = (flags & NAF_FORCE_READ) || kring->nr_kflags & NKR_PENDINTR;
 
 	if (netmap_no_pendintr || force_update) {
-		kring->nr_hwtail = nm_rxq->fl.cidx;
+		kring->nr_hwtail = nm_rxq->rspq.cidx;
 		kring->nr_kflags &= ~NKR_PENDINTR;
 	}
 
@@ -290,6 +302,7 @@ cxgb4_netmap_rxsync(struct netmap_kring *kring, int flags)
 		struct netmap_slot *slot = &ring->slot[fl_pidx];
 		uint64_t ba;
 		int i, dbinc = 0, sidx = kring->nkr_num_slots;
+        printk(KERN_INFO "%s(%u)\n", __func__, n);
 
 		/*
 		 * We always deal with 8 buffers at a time.  We must have
