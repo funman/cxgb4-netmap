@@ -207,18 +207,89 @@ cxgb4_netmap_reg(struct netmap_adapter *na, int on)
 	return rc;
 }
 
+/* How many packets can a single type1 WR carry in n descriptors */
+static inline int
+ndesc_to_npkt(const int n)
+{
+    //MPASS(n > 0 && n <= SGE_MAX_WR_NDESC);
+
+    return (n * 2 - 1);
+}
+
+/* Space (in descriptors) needed for a type1 WR that carries n packets */
+static inline int
+npkt_to_ndesc(const int n)
+{
+//    MPASS(n > 0 && n <= MAX_NPKT_IN_TYPE1_WR);
+
+    return ((n + 2) / 2);
+}
+
+#define EQ_ESIZE 64 // ?
+#define SGE_MAX_WR_NDESC (SGE_MAX_WR_LEN / EQ_ESIZE) /* max WR size in desc */
+#define MAX_NPKT_IN_TYPE1_WR        (ndesc_to_npkt(SGE_MAX_WR_NDESC))
+
+#define MPASS(...)
+
+static int
+reclaim_nm_tx_desc(struct sge_txq *nm_txq)
+{
+    struct sge_qstat *spg = (void *)&nm_txq->desc[nm_txq->size];
+    uint16_t hw_cidx = spg->cidx;   /* snapshot */
+    int n = 0;
+
+    hw_cidx = be16toh(hw_cidx);
+
+    while (nm_txq->cidx != hw_cidx) {
+        struct fw_eth_tx_pkt_wr *wr = (void *)&nm_txq->desc[nm_txq->cidx];
+        unsigned npkt;
+
+        MPASS(wr->op_pkd == htobe32(V_FW_WR_OP(FW_ETH_TX_PKTS_WR)));
+        MPASS(wr->type == 1);
+        MPASS(wr->npkt > 0 && wr->npkt <= MAX_NPKT_IN_TYPE1_WR);
+
+        npkt = /*wr->npkt;*/ (wr->r3 >> 48) & 0xff;
+        n += npkt;
+        nm_txq->cidx += npkt_to_ndesc(npkt);
+
+        /*
+         * We never sent a WR that wrapped around so the credits coming
+         * back, WR by WR, should never cause the cidx to wrap around
+         * either.
+         */
+        MPASS(nm_txq->cidx <= nm_txq->size);
+        if (unlikely(nm_txq->cidx == nm_txq->size))
+            nm_txq->cidx = 0;
+    }
+
+    return n;
+}
+
+
+
+/* How many contiguous free descriptors starting at pidx */
+static inline int
+contiguous_ndesc_available(struct sge_txq *nm_txq)
+{
+
+    if (nm_txq->cidx > nm_txq->pidx)
+        return (nm_txq->cidx - nm_txq->pidx - 1);
+    else if (nm_txq->cidx > 0)
+        return (nm_txq->size - nm_txq->pidx);
+    else
+        return (nm_txq->size - nm_txq->pidx - 1);
+}
+
 static int
 cxgb4_netmap_txsync(struct netmap_kring *kring, int flags)
 {
-#if 0
 	struct netmap_adapter *na = kring->na;
-	struct ifnet *ifp = na->ifp;
-	struct vi_info *vi = ifp->if_softc;
-	struct adapter *sc = vi->pi->adapter;
-	struct sge_nm_txq *nm_txq = &sc->sge.nm_txq[vi->first_nm_txq + kring->ring_id];
-	const u_int head = kring->rhead;
-	u_int reclaimed = 0;
-	int n, d, npkt_remaining, ndesc_remaining, txcsum;
+	struct net_device *dev = na->ifp;
+	struct adapter *adapter = netdev2adap(dev);
+	unsigned int const head = kring->rhead;
+	unsigned int n;
+    struct port_info *pi = netdev2pinfo(dev);
+	struct sge_eth_txq *nm_txq = &adapter->sge.ethtxq[kring->ring_id + pi->first_qset];
 
 	/*
 	 * Tx was at kring->nr_hwcur last time around and now we need to advance
@@ -227,17 +298,20 @@ cxgb4_netmap_txsync(struct netmap_kring *kring, int flags)
 	 * between descriptors and frames isn't 1:1).
 	 */
 
-	npkt_remaining = head >= kring->nr_hwcur ? head - kring->nr_hwcur :
+	unsigned int npkt_remaining = head >= kring->nr_hwcur ? head - kring->nr_hwcur :
 	    kring->nkr_num_slots - kring->nr_hwcur + head;
-	txcsum = ifp->if_capenable & (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6);
+    unsigned int reclaimed = 0;
+//	unsigned int txcsum = ifp->if_capenable & (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6);
 	while (npkt_remaining) {
-		reclaimed += reclaim_nm_tx_desc(nm_txq);
-		ndesc_remaining = 0;//contiguous_ndesc_available(nm_txq);
+        unsigned ndesc_remaining;
+        int d;
+		reclaimed += reclaim_nm_tx_desc(&nm_txq->q);
+		ndesc_remaining = contiguous_ndesc_available(&nm_txq->q);
+		/* # of desc needed to tx all remaining packets */
+		d = (npkt_remaining / MAX_NPKT_IN_TYPE1_WR) * SGE_MAX_WR_NDESC;
 		/* Can't run out of descriptors with packets still remaining */
 		assert(ndesc_remaining > 0);
 
-		/* # of desc needed to tx all remaining packets */
-		d = (npkt_remaining / MAX_NPKT_IN_TYPE1_WR) * SGE_MAX_WR_NDESC;
 		if (npkt_remaining % MAX_NPKT_IN_TYPE1_WR)
 			d += npkt_to_ndesc(npkt_remaining % MAX_NPKT_IN_TYPE1_WR);
 
@@ -257,21 +331,19 @@ cxgb4_netmap_txsync(struct netmap_kring *kring, int flags)
 	}
 	assert(npkt_remaining == 0);
 	assert(kring->nr_hwcur == head);
-	assert(nm_txq->dbidx == nm_txq->pidx);
+	assert(nm_txq->q.db_pidx == nm_txq->q.pidx);
 
 	/*
 	 * Second part: reclaim buffers for completed transmissions.
 	 */
 	if (reclaimed || flags & NAF_FORCE_RECLAIM || nm_kr_txempty(kring)) {
-		reclaimed += reclaim_nm_tx_desc(nm_txq);
+		reclaimed += reclaim_nm_tx_desc(&nm_txq->q);
 		kring->nr_hwtail += reclaimed;
 		if (kring->nr_hwtail >= kring->nkr_num_slots)
 			kring->nr_hwtail -= kring->nkr_num_slots;
 	}
 
 	return (0);
-#endif
-    return -1;
 }
 
 static int
