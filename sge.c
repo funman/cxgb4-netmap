@@ -2466,7 +2466,7 @@ static int process_responses(struct sge_rspq *q, int budget)
 	struct sge *s = &adapter->sge;
     struct netmap_adapter *na = NA(q->netdev);
     if (nm_netmap_on(na)) {
-        return process_responses_nm(na, q, budget);
+        //return process_responses_nm(na, q, budget);
     }
 
 	while (likely(budget_left)) {
@@ -2522,7 +2522,19 @@ static int process_responses(struct sge_rspq *q, int budget)
 			prefetch(si.va);
 
 			si.nfrags = frags + 1;
-            ret = q->handler(q, q->cur_desc, &si);
+            if (nm_netmap_on(na)) {
+                struct netmap_kring *kring = &na->rx_rings[q->idx];
+                struct netmap_ring *ring = kring->ring;
+                uint64_t ba;
+                void *p = PNMB(na, &ring->slot[q->cidx], &ba);
+                ring->slot[q->cidx].flags = kring->nkr_slot_flags;
+                ring->slot[q->cidx].len = si.tot_len;
+                memcpy(p, si.va, si.tot_len);
+                ret = 0;
+            } else {
+                ret = q->handler(q, q->cur_desc, &si);
+            }
+
 			if (likely(ret == 0))
 				q->offset += ALIGN(fp->size, s->fl_align);
 			else

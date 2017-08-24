@@ -56,6 +56,7 @@ cxgb4_netmap_on(struct netmap_adapter *na)
         struct netmap_kring *kring = &na->rx_rings[i];
         struct sge_eth_rxq *nm_rxq = &adap->sge.ethrxq[kring->ring_id + pi->first_qset];
         struct netmap_slot *slot = netmap_reset(na, NR_RX, i, 0);
+        continue;
         uint64_t hwidx;
 		assert(slot != NULL);	/* XXXNM: error check, not assert */
 
