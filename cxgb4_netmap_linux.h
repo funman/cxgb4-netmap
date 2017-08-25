@@ -487,6 +487,18 @@ static inline unsigned int flits_to_desc(unsigned int n)
     return DIV_ROUND_UP(n, 8);
 }
 
+static void xmit(struct netmap_adapter *na, struct netmap_slot *slot, struct net_device *dev)
+{
+    struct sk_buff *skb = alloc_skb(slot->len, GFP_KERNEL);
+    uint64_t ba;
+    void *p = PNMB(na, slot, &ba);
+    memcpy(skb->data, p, slot->len);
+    skb->len = slot->len;
+
+    t4_eth_xmit(skb, dev);
+//    kfree_skb(skb);
+}
+
 /*
  * Write work requests to send 'npkt' frames and ring the doorbell to send them
  * on their way.  No need to check for wraparound.
@@ -501,7 +513,7 @@ cxgb4_nm_tx(struct adapter *adap, struct sge_eth_txq *q,
     const unsigned int lim = kring->nkr_num_slots - 1;
     struct port_info *pi = netdev2pinfo(dev);
 
-    while (npkt) {
+    while (npkt--) {
         struct netmap_slot *slot = &ring->slot[kring->nr_hwcur];
         struct fw_eth_tx_pkt_wr *wr;
         uint64_t ba;
@@ -513,6 +525,9 @@ cxgb4_nm_tx(struct adapter *adap, struct sge_eth_txq *q,
         void *pos;
         int left;
         u64 *p;
+
+        xmit(na, slot, dev);
+        continue;
 
         len = slot->len;
         flits = (len + 7) / 8;
@@ -575,7 +590,6 @@ cxgb4_nm_tx(struct adapter *adap, struct sge_eth_txq *q,
 		ring_tx_db(adap, &q->q, 1);
 
         kring->nr_hwcur = nm_next(kring->nr_hwcur, lim);
-		npkt--;
 	}
 }
 #endif
