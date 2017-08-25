@@ -56,9 +56,9 @@ cxgb4_netmap_on(struct netmap_adapter *na)
         struct netmap_kring *kring = &na->rx_rings[i];
         struct sge_eth_rxq *nm_rxq = &adap->sge.ethrxq[kring->ring_id + pi->first_qset];
         struct netmap_slot *slot = netmap_reset(na, NR_RX, i, 0);
-        continue;
         uint64_t hwidx;
 		assert(slot != NULL);	/* XXXNM: error check, not assert */
+        continue;
 
         if (adap->sge.fl_pg_order == 0) {
             hwidx = 0;
@@ -90,18 +90,19 @@ cxgb4_netmap_on(struct netmap_adapter *na)
 	}
 
     /* TX */
-#if 0
-	for_each_nm_txq(vi, i, nm_txq) {
-		struct netmap_kring *kring = &na->tx_rings[nm_txq->nid];
-		if (!nm_kring_pending_on(kring) ||
-		    nm_txq->cntxt_id != INVALID_NM_TXQ_CNTXT_ID)
-			continue;
+    assert(nm_native_on(na));
 
-		//alloc_nm_txq_hwq(vi, nm_txq);
-		slot = netmap_reset(na, NR_TX, i, 0);
+    for (i = 0; i < pi->nqsets; i++) {
+        assert(i < na->num_tx_rings);
+//        struct sge_eth_txq *nm_txq = &adap->sge.ethtxq[kring->ring_id + pi->first_qset];
+        struct netmap_slot *slot = netmap_reset(na, NR_TX, i, 0);
 		assert(slot != NULL);	/* XXXNM: error check, not assert */
+		/*if (!nm_kring_pending_on(kring) ||
+		    nm_txq->cntxt_id != INVALID_NM_TXQ_CNTXT_ID)
+			continue;*/
+		//alloc_nm_txq_hwq(vi, nm_txq);
 	}
-
+#if  0
 	if (vi->nm_rss == NULL) {
 		vi->nm_rss = malloc(vi->rss_size * sizeof(uint16_t), M_CXGBE,
 		    M_ZERO | M_WAITOK);
@@ -245,7 +246,7 @@ reclaim_nm_tx_desc(struct sge_txq *nm_txq)
         struct fw_eth_tx_pkt_wr *wr = (void *)&nm_txq->desc[nm_txq->cidx];
         unsigned npkt;
 
-        MPASS(wr->op_pkd == htobe32(V_FW_WR_OP(FW_ETH_TX_PKTS_WR)));
+        MPASS(wr->op_pkd == htobe32(FW_WR_OP_V(FW_ETH_TX_PKTS_WR)));
         MPASS(wr->type == 1);
         MPASS(wr->npkt > 0 && wr->npkt <= MAX_NPKT_IN_TYPE1_WR);
 
@@ -281,6 +282,304 @@ contiguous_ndesc_available(struct sge_txq *nm_txq)
         return (nm_txq->size - nm_txq->pidx - 1);
 }
 
+/* This function copies 64 byte coalesced work request to
+ * memory mapped BAR2 space. For coalesced WR SGE fetches
+ * data from the FIFO instead of from Host.
+ */
+static void cxgb_pio_copy(u64 __iomem *dst, u64 *src)
+{
+    int count = 8;
+
+    while (count) {
+        writeq(*src, dst);
+        src++;
+        dst++;
+        count--;
+    }
+}
+
+
+/**
+ *  ring_tx_db - check and potentially ring a Tx queue's doorbell
+ *  @adap: the adapter
+ *  @q: the Tx queue
+ *  @n: number of new descriptors to give to HW
+ *
+ *  Ring the doorbel for a Tx queue.
+ */
+static inline void ring_tx_db(struct adapter *adap, struct sge_txq *q, int n)
+{
+    /* Make sure that all writes to the TX Descriptors are committed
+     * before we tell the hardware about them.
+     */
+    wmb();
+
+    /* If we don't have access to the new User Doorbell (T5+), use the old
+     * doorbell mechanism; otherwise use the new BAR2 mechanism.
+     */
+    if (unlikely(q->bar2_addr == NULL)) {
+        u32 val = PIDX_V(n);
+        unsigned long flags;
+
+        /* For T4 we need to participate in the Doorbell Recovery
+         * mechanism.
+         */
+        spin_lock_irqsave(&q->db_lock, flags);
+        if (!q->db_disabled)
+            t4_write_reg(adap, MYPF_REG(SGE_PF_KDOORBELL_A),
+                     QID_V(q->cntxt_id) | val);
+        else
+            q->db_pidx_inc += n;
+        q->db_pidx = q->pidx;
+        spin_unlock_irqrestore(&q->db_lock, flags);
+    } else {
+        u32 val = PIDX_T5_V(n);
+
+        /* T4 and later chips share the same PIDX field offset within
+         * the doorbell, but T5 and later shrank the field in order to
+         * gain a bit for Doorbell Priority.  The field was absurdly
+         * large in the first place (14 bits) so we just use the T5
+         * and later limits and warn if a Queue ID is too large.
+         */
+        WARN_ON(val & DBPRIO_F);
+
+        /* If we're only writing a single TX Descriptor and we can use
+         * Inferred QID registers, we can use the Write Combining
+         * Gather Buffer; otherwise we use the simple doorbell.
+         */
+        if (n == 1 && q->bar2_qid == 0) {
+            int index = (q->pidx
+                     ? (q->pidx - 1)
+                     : (q->size - 1));
+            u64 *wr = (u64 *)&q->desc[index];
+
+            cxgb_pio_copy((u64 __iomem *)
+                      (q->bar2_addr + SGE_UDB_WCDOORBELL),
+                      wr);
+        } else {
+            writel(val | QID_V(q->bar2_qid),
+                   q->bar2_addr + SGE_UDB_KDOORBELL);
+        }
+
+        /* This Write Memory Barrier will force the write to the User
+         * Doorbell area to be flushed.  This is needed to prevent
+         * writes on different CPUs for the same queue from hitting
+         * the adapter out of order.  This is required when some Work
+         * Requests take the Write Combine Gather Buffer path (user
+         * doorbell area offset [SGE_UDB_WCDOORBELL..+63]) and some
+         * take the traditional path where we simply increment the
+         * PIDX (User Doorbell area SGE_UDB_KDOORBELL) and have the
+         * hardware DMA read the actual Work Request.
+         */
+        wmb();
+    }
+}
+
+#if 0 // freebsd
+/*
+ * Write work requests to send 'npkt' frames and ring the doorbell to send them
+ * on their way.  No need to check for wraparound.
+ */
+static void
+cxgb4_nm_tx(struct adapter *sc, struct sge_txq *nm_txq,
+    struct netmap_kring *kring, int npkt, int npkt_remaining, int txcsum)
+{
+    struct netmap_ring *ring = kring->ring;
+    struct netmap_slot *slot;
+    const u_int lim = kring->nkr_num_slots - 1;
+    struct fw_eth_tx_pkt_wr *wr = (void *)&nm_txq->desc[nm_txq->pidx];
+    uint16_t len;
+    uint64_t ba;
+    struct cpl_tx_pkt_core *cpl;
+    struct ulptx_sgl *usgl;
+    int i, n;
+
+    while (npkt) {
+        n = min(npkt, MAX_NPKT_IN_TYPE1_WR);
+        len = 0;
+
+        wr = (void *)&nm_txq->desc[nm_txq->pidx];
+        wr->op_immdlen = htobe32(FW_WR_OP_V(FW_ETH_TX_PKT_WR));
+        wr->equiq_to_len16 = htobe32(FW_WR_LEN16_V(npkt_to_len16(n)));
+//        wr->npkt = n;
+        wr->r3 = cpu_to_be64(0 | (n << 8) | 1);
+//        wr->type = 1;
+        cpl = (void *)(wr + 1);
+
+        for (i = 0; i < n; i++) {
+            slot = &ring->slot[kring->nr_hwcur];
+            PNMB(kring->na, slot, &ba);
+            MPASS(ba != 0);
+
+            cpl->ctrl0 = nm_txq->cpl_ctrl0;
+            cpl->pack = 0;
+            cpl->len = htobe16(slot->len);
+            /*
+             * netmap(4) says "netmap does not use features such as
+             * checksum offloading, TCP segmentation offloading,
+             * encryption, VLAN encapsulation/decapsulation, etc."
+             *
+             * So the ncxl interfaces have tx hardware checksumming
+             * disabled by default.  But you can override netmap by
+             * enabling IFCAP_TXCSUM on the interface manully.
+             */
+            cpl->ctrl1 = txcsum ? 0 :
+                htobe64(F_TXPKT_IPCSUM_DIS | F_TXPKT_L4CSUM_DIS);
+
+            usgl = (void *)(cpl + 1);
+            usgl->cmd_nsge = htobe32(ULPTX_CMD_V(ULP_TX_SC_DSGL) |
+                ULPTX_NSGE_V(1));
+            usgl->len0 = htobe32(slot->len);
+            usgl->addr0 = htobe64(ba);
+
+            slot->flags &= ~(NS_REPORT | NS_BUF_CHANGED);
+            cpl = (void *)(usgl + 1);
+            MPASS(slot->len + len <= UINT16_MAX);
+            len += slot->len;
+            kring->nr_hwcur = nm_next(kring->nr_hwcur, lim);
+        }
+        wr->plen = htobe16(len);
+
+        npkt -= n;
+        nm_txq->pidx += npkt_to_ndesc(n);
+        MPASS(nm_txq->pidx <= nm_txq->sidx);
+        if (__predict_false(nm_txq->pidx == nm_txq->sidx)) {
+            /*
+             * This routine doesn't know how to write WRs that wrap
+             * around.  Make sure it wasn't asked to.
+             */
+            MPASS(npkt == 0);
+            nm_txq->pidx = 0;
+        }
+
+        if (npkt == 0 && npkt_remaining == 0) {
+            /* All done. */
+            if (lazy_tx_credit_flush == 0) {
+                wr->equiq_to_len16 |= htobe32(F_FW_WR_EQUEQ |
+                    F_FW_WR_EQUIQ);
+                nm_txq->equeqidx = nm_txq->pidx;
+                nm_txq->equiqidx = nm_txq->pidx;
+            }
+            ring_nm_txq_db(sc, nm_txq);
+            return;
+        }
+
+        if (NMIDXDIFF(nm_txq, equiqidx) >= nm_txq->sidx / 2) {
+            wr->equiq_to_len16 |= htobe32(F_FW_WR_EQUEQ |
+                F_FW_WR_EQUIQ);
+            nm_txq->equeqidx = nm_txq->pidx;
+            nm_txq->equiqidx = nm_txq->pidx;
+        } else if (NMIDXDIFF(nm_txq, equeqidx) >= 64) {
+            wr->equiq_to_len16 |= htobe32(F_FW_WR_EQUEQ);
+            nm_txq->equeqidx = nm_txq->pidx;
+        }
+        if (NMIDXDIFF(nm_txq, dbidx) >= 2 * SGE_MAX_WR_NDESC)
+            ring_nm_txq_db(sc, nm_txq);
+    }
+
+    /* Will get called again. */
+    MPASS(npkt_remaining);
+}
+#else
+static inline unsigned int flits_to_desc(unsigned int n)
+{
+    BUG_ON(n > SGE_MAX_WR_LEN / 8);
+    return DIV_ROUND_UP(n, 8);
+}
+
+/*
+ * Write work requests to send 'npkt' frames and ring the doorbell to send them
+ * on their way.  No need to check for wraparound.
+ */
+static void
+cxgb4_nm_tx(struct adapter *adap, struct sge_eth_txq *q,
+    struct netmap_kring *kring, int npkt, int npkt_remaining, int txcsum)
+{
+	struct netmap_adapter *na = kring->na;
+    struct netmap_ring *ring = kring->ring;
+	struct net_device *dev = na->ifp;
+    const unsigned int lim = kring->nkr_num_slots - 1;
+    struct port_info *pi = netdev2pinfo(dev);
+
+    while (npkt) {
+        struct netmap_slot *slot = &ring->slot[kring->nr_hwcur];
+        struct fw_eth_tx_pkt_wr *wr;
+        uint64_t ba;
+        u32 wr_mid, op, ctrl0;
+        uint64_t *end;
+        unsigned int flits;
+        unsigned int len;
+        struct cpl_tx_pkt_core *cpl;
+        void *pos;
+        int left;
+        u64 *p;
+
+        len = slot->len;
+        flits = (len + 7) / 8;
+        wr_mid = FW_WR_LEN16_V(DIV_ROUND_UP(flits, 2));
+
+        wr = (void *)&q->q.desc[q->q.pidx];
+        wr->equiq_to_len16 = htonl(wr_mid);
+        wr->r3 = cpu_to_be64(0);
+        end = (u64 *)wr + flits;
+
+        printk(KERN_INFO "%s(flits %u > ndescs %u)\n", __func__, flits, flits_to_desc(flits));
+
+        len += sizeof(*cpl);
+        op = FW_ETH_TX_PKT_WR; // PTP?
+        wr->op_immdlen =  htonl(FW_WR_OP_V(op) |
+                FW_WR_IMMDLEN_V(len));
+        cpl = (void*)(wr+1);
+
+		ctrl0 = TXPKT_OPCODE_V(CPL_TX_PKT_XT) | TXPKT_INTF_V(pi->tx_chan) |
+			TXPKT_PF_V(adap->pf);
+#ifdef CONFIG_CHELSIO_T4_DCB
+		if (is_t4(adap->params.chip))
+			ctrl0 |= TXPKT_OVLAN_IDX_V(q->dcb_prio);
+		else
+			ctrl0 |= TXPKT_T5_OVLAN_IDX_V(q->dcb_prio);
+#endif
+		cpl->ctrl0 = htonl(ctrl0);
+		cpl->pack = htons(0);
+		cpl->len = htons(len); // - eth header?
+		cpl->ctrl1 = cpu_to_be64(TXPKT_L4CSUM_DIS_F | TXPKT_IPCSUM_DIS_F);
+
+#if 0
+		inline_tx_skb(skb, &q->q, cpl + 1);
+#else
+        pos = cpl + 1;
+        p = PNMB(kring->na, slot, &ba);
+        left = (void*)q->q.stat - pos;
+        if (len <= left) {
+            memcpy(pos, p, len);
+            pos += len;
+        } else {
+            printk(KERN_INFO "%s(len %u > left %u)\n", __func__, len, left);
+        }
+        /* 0-pad to multiple of 16 */
+        p = PTR_ALIGN(pos, 8);
+        if ((uintptr_t)p & 8)
+            *p = 0;
+#endif
+
+#if 0
+		txq_advance(&q->q, ndesc);
+#else
+		q->q.in_use += 1;
+		q->q.pidx += 1;
+		if (q->q.pidx >= q->q.size)
+			q->q.pidx -= q->q.size;
+#endif
+
+
+		ring_tx_db(adap, &q->q, 1);
+
+        kring->nr_hwcur = nm_next(kring->nr_hwcur, lim);
+		npkt--;
+	}
+}
+#endif
+
 static int
 cxgb4_netmap_txsync(struct netmap_kring *kring, int flags)
 {
@@ -302,7 +601,7 @@ cxgb4_netmap_txsync(struct netmap_kring *kring, int flags)
 	unsigned int npkt_remaining = head >= kring->nr_hwcur ? head - kring->nr_hwcur :
 	    kring->nkr_num_slots - kring->nr_hwcur + head;
     unsigned int reclaimed = 0;
-//	unsigned int txcsum = ifp->if_capenable & (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6);
+	unsigned int txcsum = 0;//ifp->if_capenable & (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6);
 	while (npkt_remaining) {
         unsigned ndesc_remaining;
         int d;
@@ -326,9 +625,10 @@ cxgb4_netmap_txsync(struct netmap_kring *kring, int flags)
 				n += ndesc_to_npkt(ndesc_remaining % SGE_MAX_WR_NDESC);
 		}
 
+        n = 1; // XXX
 		/* Send n packets and update nm_txq->pidx and kring->nr_hwcur */
 		npkt_remaining -= n;
-		//cxgb4_nm_tx(sc, nm_txq, kring, n, npkt_remaining, txcsum);
+		cxgb4_nm_tx(adapter, nm_txq, kring, n, npkt_remaining, txcsum);
 	}
 	assert(npkt_remaining == 0);
 	assert(kring->nr_hwcur == head);
